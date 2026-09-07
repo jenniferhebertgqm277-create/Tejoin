@@ -28,6 +28,11 @@ app.use(limiter);
 // @note static files from public folder
 app.use(express.static(path.join(process.cwd(), 'public')));
 
+// @fix favicon 204 agar tidak 404/menggantung di webview game
+app.all('/favicon.ico', (_req: Request, res: Response) => {
+  res.status(204).end();
+});
+
 // @note request logging middleware
 app.use((req: Request, _res: Response, next: NextFunction) => {
   const clientIp =
@@ -45,6 +50,24 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 // @note root endpoint
 app.get('/', (_req: Request, res: Response) => {
   res.send('Hello, world!');
+});
+
+/**
+ * @fix validate/close endpoint - game navigasi ke sini setelah login sukses.
+ * Route ini TIDAK ADA di upstream -> game dapat 404 "during request".
+ * Token opsional digemakan di halaman untuk client yang membacanya
+ * dari URL/halaman (tidak merusak client yang hanya mencocokkan URL).
+ */
+app.all('/player/validate/close', async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Content-Type', 'text/html');
+  const t = typeof req.query.token === 'string' ? req.query.token : '';
+  const safe = t.replace(/</g, '');
+  res.send(
+    '<script>window.close();</script>' +
+      (safe ? `<div id="gtpsToken" style="display:none">${safe}</div>` : ''),
+  );
 });
 
 /**
@@ -72,6 +95,9 @@ app.all('/player/login/dashboard', async (req: Request, res: Response) => {
   const htmlContent = templateContent.replace('{{ data }}', encodedClientData);
 
   res.setHeader('Content-Type', 'text/html');
+  // @fix no-store: webview game agresif meng-cache halaman dashboard lama
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Pragma', 'no-cache');
   res.send(htmlContent);
 });
 
@@ -85,9 +111,9 @@ app.all(
   async (req: Request, res: Response) => {
     try {
       const formData = req.body as Record<string, string>;
-      const _token = formData._token;
-      const growId = formData.growId;
-      const password = formData.password;
+      const _token = formData._token || '';
+      const growId = formData.growId || '';
+      const password = formData.password || '';
       const email = formData.email;
 
       let token = '';
@@ -101,6 +127,12 @@ app.all(
         ).toString('base64');
       }
 
+      // @fix log diagnostik (tanpa secret): kelihatan di log Vercel
+      console.log(
+        `[VALIDATE] growId present=${!!growId} tokenLen=${token.length}`,
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Pragma', 'no-cache');
       res.send(
         JSON.stringify({
           status: 'success',
@@ -108,6 +140,8 @@ app.all(
           token,
           url: '',
           accountType: 'growtopia',
+          // @fix accountAge disamakan dengan respons checktoken
+          accountAge: 2,
         }),
       );
     } catch (error) {
@@ -137,6 +171,7 @@ app.all('/player/growid/checktoken', async (_req: Request, res: Response) => {
 app.all(
   '/player/growid/validate/checktoken',
   async (req: Request, res: Response) => {
+    let result = 'error';
     try {
       let refreshToken: string | undefined;
       let clientData: string | undefined;
@@ -195,11 +230,11 @@ app.all(
 
       console.log(`[CHECKTOKEN] Parsed as ${source}`);
 
-      if (!refreshToken || !clientData) {
-        console.log(`[ERROR]: Missing refreshToken or clientData`);
+      if (!refreshToken) {
+        console.log(`[ERROR]: Missing refreshToken`);
         res.status(200).json({
           status: 'error',
-          message: 'Missing refreshToken or clientData',
+          message: 'Missing refreshToken',
         });
         return;
       }
@@ -215,13 +250,27 @@ app.all(
         decodedRefreshToken = decodedRefreshToken.replace('&reg=1', '');
       }
 
-      const token = Buffer.from(
-        decodedRefreshToken.replace(
+      // @fix clientData opsional: bila tidak dikirim, pertahankan _token lama
+      // (sebelumnya request tanpa clientData langsung error).
+      let newTokenInner = decodedRefreshToken;
+      if (clientData) {
+        newTokenInner = decodedRefreshToken.replace(
           /(_token=)[^&]*/,
           `$1${Buffer.from(clientData).toString('base64')}`,
-        ),
-      ).toString('base64');
+        );
+      }
 
+      const token = Buffer.from(newTokenInner).toString('base64');
+
+      // @fix log diagnostik (tanpa secret)
+      const hasGrowId = decodedRefreshToken.includes('growId=');
+      const hasPass = decodedRefreshToken.includes('password=');
+      console.log(
+        `[CHECKTOKEN] rtLen=${refreshToken.length} hasGrowId=${hasGrowId} hasPass=${hasPass} result=success`,
+      );
+      result = 'success';
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Pragma', 'no-cache');
       res.send(
         JSON.stringify({
           status: 'success',
@@ -234,6 +283,7 @@ app.all(
       );
     } catch (error) {
       console.log(`[ERROR]: ${error}`);
+      console.log(`[CHECKTOKEN] result=${result}`);
       res.status(200).json({
         status: 'error',
         message: 'Internal Server Error',
