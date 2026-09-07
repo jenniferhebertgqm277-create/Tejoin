@@ -251,7 +251,9 @@
     };
     $('#modalButton').trigger('click');
     $('.close').on('click', function () {
-      window.location = "https://login.growtopiagame.com/player/validate/close"
+      // @fix URL relatif agar ikut domain backend sendiri
+      // (sebelumnya hardcode login.growtopiagame.com)
+      window.location = '/player/validate/close';
     });
     // $('form').submit($('form .grow-button').attr('disabled', 'true'));
 
@@ -276,6 +278,44 @@
     });
     observer.observe(document.body, { attributes: false, childList: true, characterData: false });
   });
+</script>
+<script>
+  // @fix submit via fetch, lalu navigasi ke /player/validate/close saat sukses.
+  // Submit biasa berhenti di halaman raw JSON dan sebagian client game tidak
+  // lanjut (menunggu navigasi close). Dengan fetch: JSON tetap dibalas sama
+  // (bisa dibaca intersepsi webview) + webview navigasi ke close -> game
+  // menutup webview dan lanjut "Logging on".
+  (function () {
+    function hookForm(id, btnLabel) {
+      var f = document.getElementById(id);
+      if (!f) return;
+      f.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var btn = f.querySelector('input[type="submit"]');
+        var body = new URLSearchParams(new FormData(f)).toString();
+        fetch(f.action, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+          body: body
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            if (j && j.status === 'success' && j.token) {
+              window.location = '/player/validate/close?token=' + encodeURIComponent(j.token);
+            } else {
+              if (btn) { btn.disabled = false; btn.value = btnLabel; }
+              alert('Login gagal: ' + ((j && j.message) || 'unknown'));
+            }
+          })
+          .catch(function (err) {
+            if (btn) { btn.disabled = false; btn.value = btnLabel; }
+            alert('Login gagal: ' + err);
+          });
+      });
+    }
+    hookForm('loginForm', 'Log in');
+    hookForm('registerForm', 'Register');
+  })();
 </script>
 
 </html>
